@@ -2,7 +2,7 @@
 name: fcss-client
 description: Use when a client wants to store data via the Filecoin Cold Storage Service (FCSS) / PoRep Market — preparing a raw dataset into Singularity CAR files, uploading pieces and a manifest to client-owned cloud storage (S3, Cloudflare R2, GCS, or any S3-compatible bucket), and/or proposing, funding, and completing PoRep Market storage deals via filecoin-porep-market-tooling. Reach for this whenever the user wants to actually store data through FCSS or the PoRep Market, even if they don't name the tools. Triggers on "Filecoin cold storage", "FCSS", "PoRep Market", "store my data on Filecoin", "onboard to Filecoin", "propose a deal", "Singularity", "prepare a dataset for Filecoin", "porep-market-tooling", "DataCap allocation", "manifest URL". Client-side only — this does not cover storage-provider operations (accepting deals, onboard-data, claiming allocations). All PoRep Market operations here run on Filecoin MAINNET — there is no testnet deployment today — so proposing, allocating, and depositing all spend real FIL and USDFC. Assumes nothing is pre-installed except Docker, git, python3, curl, and jq; Singularity, the tooling CLI, and rclone are all bootstrapped automatically.
 version: 0.1.0
-license: Unlicense
+license: Apache-2.0
 ---
 
 # FCSS Client Onboarding — Filecoin Cold Storage via the PoRep Market
