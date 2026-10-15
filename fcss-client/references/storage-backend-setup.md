@@ -9,7 +9,9 @@ one-time setups first (or confirm they've already done it).
 1. A bucket.
 2. Credentials with write access to it (or a service account key, for GCS).
 3. The bucket (or at least its `piece/` and `<dataset_name>/` prefixes)
-   publicly readable, at a known public URL prefix.
+   publicly readable, at a known public URL prefix. That URL must answer
+   directly, with no redirect (the PoRep Market tooling doesn't follow
+   redirects), and resolve to a public IP address.
 
 `prepare-filecoin-dataset.sh` verifies #3 itself at the end of a run — if
 it isn't public yet, the run fails with the exact URL that didn't resolve,
