@@ -3,6 +3,10 @@
 # mainnet private key) and a Python venv. Never commit this.
 filecoin-porep-market-tooling/
 
+# Created at runtime by propose-filecoin-deal.sh — full output of every
+# transactional command it ran.
+logs/
+
 # Created at runtime by prepare-filecoin-dataset.sh — a generated compose
 # file plus Singularity's local db/data volumes for whatever dataset was
 # last prepared on this machine.

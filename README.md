@@ -8,7 +8,8 @@ client's own AI agent.
 - **[fcss-client](fcss-client/SKILL.md)** — onboard a dataset to the
   Filecoin Cold Storage Service (FCSS) / PoRep Market: prepare it with
   Singularity, upload it to client-owned storage (S3, R2, GCS, or any
-  S3-compatible bucket), and propose, fund, and complete a storage deal via
+  S3-compatible bucket), and propose, fund, and complete two independent
+  storage deals (two copies, two different storage-provider organizations) via
   [filecoin-porep-market-tooling](https://github.com/fidlabs/filecoin-porep-market-tooling).
   Client-side only; runs on Filecoin mainnet — all deal proposals and
   payments are real.

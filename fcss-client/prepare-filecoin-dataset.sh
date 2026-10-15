@@ -60,10 +60,14 @@ official Docker image — no local rclone install needed.
 
 On success prints:
   MANIFEST_URL=<url>
-Hand that URL to the storage provider onboarding platform. Tell the storage
-provider to pass --port 443 when running `onboard-data` (or any tool
-deriving the download host from this URL) unless they override --host —
-public buckets serve HTTPS on 443, not Singularity's usual port 7777.
+Use that URL with propose-filecoin-deal.sh. Storage providers must pass
+--port 443 to `sp onboard-data`: public buckets serve HTTPS on 443, and
+onboard-data always appends a port (default 7777, Singularity's usual port),
+even when --host is given.
+
+A published manifest is never overwritten with different content: deals
+commit to the exact manifest bytes. To prepare changed data, use a new
+dataset_name.
 USAGE
   exit 1
 }
@@ -502,21 +506,39 @@ echo "All pieces verified downloadable."
 MANIFEST_FILE=$(mktemp)
 echo "$RESULT" | jq '.' > "$MANIFEST_FILE"
 
-echo "==> Uploading manifest"
-rclone_upload "$MANIFEST_FILE" "${DATASET_NAME}/manifest.json"
-rm -f "$MANIFEST_FILE"
-
 MANIFEST_URL="${PUBLIC_BASE_URL}/${DATASET_NAME}/manifest.json"
-curl -sf "$MANIFEST_URL" >/dev/null || die "manifest is not reachable at $MANIFEST_URL"
+
+# A deal commits on-chain to a hash of the exact manifest bytes at its URL,
+# and the client cannot repoint it (only the market admin can, and only
+# before the SP submits evidence). Overwriting a published manifest with
+# different bytes would leave any deal already proposed against it pointing
+# at data that no longer matches. Re-uploading identical bytes is harmless.
+PUBLISHED_FILE=$(mktemp)
+published_code=$(curl -s -o "$PUBLISHED_FILE" -w '%{http_code}' --max-time 30 "$MANIFEST_URL" || true)
+if [ "$published_code" = "200" ]; then
+  if cmp -s "$MANIFEST_FILE" "$PUBLISHED_FILE"; then
+    echo "==> Manifest already published with identical content; leaving it as is"
+  else
+    rm -f "$MANIFEST_FILE" "$PUBLISHED_FILE"
+    die "a different manifest is already published at $MANIFEST_URL. Deals may already reference it, so it will not be overwritten. Prepare the changed data under a new dataset_name."
+  fi
+else
+  echo "==> Uploading manifest"
+  rclone_upload "$MANIFEST_FILE" "${DATASET_NAME}/manifest.json"
+fi
+rm -f "$MANIFEST_FILE" "$PUBLISHED_FILE"
+
+# The PoRep Market tooling fetches the manifest without following redirects.
+manifest_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$MANIFEST_URL" || true)
+[ "$manifest_code" = "200" ] \
+  || die "manifest must answer HTTP 200 directly at $MANIFEST_URL, without redirects (got: ${manifest_code:-no response}). Check --public-base-url."
 
 echo
 echo "MANIFEST_URL=${MANIFEST_URL}"
 echo
-echo "IMPORTANT: tell the storage provider to pass --port 443 when running"
-echo "\`onboard-data\` (or any tool deriving the download host from this URL),"
-echo "since the default port (7777) isn't reachable on a public bucket —"
-echo "only 443 is. If they instead pass an explicit --host, none of this"
-echo "matters."
+echo "IMPORTANT: storage providers must pass --port 443 to \`sp onboard-data\`."
+echo "Public buckets serve HTTPS on 443, and onboard-data always appends a"
+echo "port (default 7777), even when --host is given."
 echo
 echo "This data now lives in your own bucket, not on this machine. You can"
 echo "close this laptop, shut down Docker, whatever you like — the manifest"

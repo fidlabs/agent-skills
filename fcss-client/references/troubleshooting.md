@@ -12,7 +12,7 @@ commands or modify the scripts.
 |---|---|---|
 | Prepared/uploaded data is a tiny fraction of the expected size, no error anywhere | Source directory looks full size in Finder/Explorer but the files aren't actually materialized on disk — see "Silent data loss" below | `du -sh` the source directory directly (not through an agent relay) and compare to the expected size before preparing |
 | SP's downloads hang or time out intermittently, but a single manual request to the same URL works fine | Cloudflare R2's `pub-*.r2.dev` public URL is rate-limited and documented as dev-only | Front the bucket with a custom domain — see storage-backend-setup.md |
-| `gaierror: Name or service not known` fetching a manifest | The manifest was served via a Cloudflare quick tunnel from an old version of this pipeline, and that tunnel's host (client's laptop) went offline — quick tunnels never reuse the same hostname on restart, so this is unrecoverable for that deal | Current versions of `prepare-filecoin-dataset.sh` upload to durable client-owned storage instead of tunneling, specifically because of this incident. If you see this, you're looking at a stale deployment — re-prepare with a current version, and note the affected deal's `manifest_location` cannot be changed on-chain (see below) |
+| `gaierror: Name or service not known` fetching a manifest | The manifest was served via a Cloudflare quick tunnel from an old version of this pipeline, and that tunnel's host (client's laptop) went offline — quick tunnels never reuse the same hostname on restart, so this is unrecoverable for that deal | Current versions of `prepare-filecoin-dataset.sh` upload to durable client-owned storage instead of tunneling, specifically because of this incident. If you see this, you're looking at a stale deployment — re-prepare with a current version, and note the client cannot change the affected deal's `manifest_location` itself (see below) |
 | `duplicated key not allowed` when Singularity containers start against a fresh database | Two services running the Singularity image both auto-migrate the schema on startup, racing on an empty DB | The current compose file only runs one Singularity-image service (`singularity-api`) against the DB, so this shouldn't recur as shipped. If you add a second Singularity service (e.g. a custom content-provider), pass `--no-automigrate` to it |
 | `storage with name X already exists: duplicate record` (HTTP 409) | Normal — Singularity's storage-create endpoint returns 409 for a name collision | Not an error to fix; the script's `ensure_storage` helper already treats this as success after confirming the existing path matches |
 | Creating an already-existing preparation returns HTTP 500 `duplicated key not allowed`, not 409 | Singularity's preparation-create endpoint doesn't use the same 409 convention as storage-create — this is an API inconsistency, not a bug in the script | The script checks `GET /preparation/{name}` first and skips creation if it already exists, rather than trying to pattern-match error text |
@@ -22,6 +22,17 @@ commands or modify the scripts.
 | `propose-filecoin-deal.sh` stops silently mid-command with no error message — output just ends | A now-fixed bug: `yes \| some-command` under `set -euo pipefail` can silently abort the whole script even when `some-command` succeeds — see "The `yes \| ...` SIGPIPE bug" below | Fixed in the bundled script (`(yes 2>/dev/null \|\| true) \| ...`). If you see this on an unmodified copy, you're on a stale version — re-download |
 | Testing `--storage-provider other-s3` against a self-hosted S3-compatible server (e.g. local MinIO) on the same machine, and the upload hangs indefinitely | `rclone` runs inside its own Docker container (the official `rclone/rclone` image) — `--endpoint http://localhost:PORT` refers to *that container's own* loopback, not the host machine, so it can never reach a server running on the host | Use `--endpoint http://host.docker.internal:PORT` instead of `localhost` when the endpoint is on the same machine running the script |
 | A freshly generated wallet (never funded or used) prints `Filecoin.StateLookupID(...) failed: {'code': 11, 'message': 'actor not found'}` when checked | Expected for any address with zero on-chain history — Filecoin only assigns an Actor ID once something touches the address on-chain (e.g. receiving FIL) | Non-fatal — `client info`/`setup` still succeeds overall. Resolves itself once the wallet is funded and has at least one on-chain transaction |
+| `quote` says NOT ENOUGH MATCHES, or `propose-deal` fails with `NoOfferMatched` | No eligible offer from an organization that doesn't already hold a copy. `quote` lists every offer with the reason it doesn't match | Change the terms the reasons point at. Most common: `--latency-ms` above 0 (an offer with no published latency never satisfies a latency requirement, and as of 2026-10-15 no offer publishes one), or a max price below what a second organization charges |
+| `propose-deal` for copy 2 fails after copy 1 succeeded | Only one organization matched these terms (the registry never gives the same organization two copies of one manifest) | Copy 1 is kept. Adjust the terms with the client, re-run `quote`, then re-run `execute` — it proposes only the missing copy |
+| `init-deal` fails with `... balance ... is less than required deposit` | Wallet holds less USDFC than the first month of that copy | Nothing was sent. Top up the wallet, re-run `execute` |
+| `manifest URL must answer HTTP 200 directly, without redirects` | The public URL redirects (e.g. http→https, a CDN rule) or isn't public yet. The tooling fetches manifests with redirects disabled | Use the final URL as `--public-base-url`, or fix the bucket/CDN so the manifest answers 200 directly |
+| `Manifest URL resolves to a disallowed IP address` | The tooling refuses manifest hosts that resolve to private, loopback, or reserved addresses (SSRF guard) | Serve the manifest from a public host. Local test setups are not supported by this skill |
+| `a different manifest is already published at ...` from the prep script | Re-ran prep with changed data under an existing `dataset_name` | Use a new `dataset_name`. Deals may already reference the published bytes |
+| `execute` stops with `two live copies are held by the same SP organization` | Two deals reference the same manifest URL but were proposed against different manifest bytes (the URL's content changed between proposals), so the registry treated them as different datasets | Stop. Review with `status`; the client decides with the market operator what to do with the duplicate |
+| `make-allocations` fails with `Some allocations claimed but deal still in ACCEPTED state` | Re-ran after the SP already started claiming, before DataCap posting was finished | Don't retry blindly. Check `status`; if DataCap posting is incomplete, contact the market operator |
+| Internal error `Precision lost: ... has remainder` when proposing | The max price per TiB isn't representable per 32 GiB sector in the token's smallest units (more likely with 6-decimal tokens), or float rounding of an unusual decimal | Use a simpler price, e.g. `4` or `4.5` |
+| A tooling command prints `Please run the command again to use the updated version` and exits 0 | The tooling's self-update prompt was answered "yes" | `propose-filecoin-deal.sh` sets `SKIP_SELF_UPDATE=true` and pins a commit, so this shouldn't happen through it. If you ran the tooling by hand, re-run the command, then re-run `setup` to return to the pinned commit |
+| Tooling errors about `POREP_MARKET_VIEW_HELPER` or contract addresses when run by hand | `.env` was created from an older `.env.mainnet` (by an earlier version of this skill) | `propose-filecoin-deal.sh` exports the pinned contract addresses itself. When running the tooling by hand, copy those three values from `.env.mainnet` into `.env` |
 
 ## Silent data loss: two ways a folder can lie about its size
 
@@ -57,70 +68,78 @@ different machine.
 
 ## The manifest_location problem
 
-A PoRep Market deal's `manifest_location` is set once at `propose-deal`
-time and **cannot be changed afterward** — there is no update function
-anywhere in the contract interface (`propose_deal`, `accept_deal`,
-`complete_deal`, `terminate_deal`, `reject_deal`, `reject_accepted_deal`,
-`update_rail_id`, `set_deal_completion_padding` were all checked; none
-touch this field). If the host serving a manifest goes away permanently
-after a deal has already been proposed against it (the tunnel-death
-scenario above being the canonical example), that specific deal cannot be
-repointed at a new location. The only paths forward are: get the original
-host reachable again (impossible for an ephemeral Cloudflare quick tunnel,
-since it never reuses a hostname), or reject/terminate the deal and
-propose a fresh one — a decision for the client and storage provider to
-make together, never something to do unilaterally on the client's behalf.
+A deal's manifest URL (`manifest_location`) and the hash of the manifest's
+bytes are set when it is proposed. **The client cannot change them.** In
+PoRep Market v2 the market admin can (`updateManifestLocation`), but only
+while the deal is `ACCEPTED` and before the SP has submitted any evidence.
+If the host serving a manifest goes away permanently (the tunnel-death
+scenario above being the canonical example), the paths forward are: get the
+original URL serving the same bytes again, ask the market operator to
+repoint the deal while that is still allowed, or have the deal terminated
+and propose a fresh one — decisions for the client to make with the market
+operator, never something to do unilaterally on the client's behalf.
 
-This is the whole reason the current pipeline uploads to client-owned
-durable storage instead of serving from the client's own machine: the
-window between proposing a deal and a storage provider completing
-onboarding can span days, and nothing that depends on a laptop staying
-online for that long is safe to bake into an immutable on-chain field.
+This is why the pipeline uploads to client-owned durable storage instead of
+serving from the client's machine, and why the prep script refuses to
+overwrite a published manifest with different bytes: weeks can pass between
+proposing a deal and an SP finishing onboarding, and the URL must keep
+serving exactly what the deal committed to.
 
 ## `filecoin-porep-market-tooling`-specific notes
 
-- **The upstream tool calls the payment token "USDC" everywhere in its own
-  code and env vars** (`USDC_TOKEN`, the `USDCToken` class,
-  `--price-per-sector-per-month`'s own help text) — **the actual mainnet
-  token configured is USDFC** (Secured Finance's Filecoin-native,
-  FIL-collateralized stablecoin), confirmed by checking the configured
-  contract address (`USDC_TOKEN` in `.env.mainnet`) against Filecoin's own
-  Filfox explorer, which identifies it as USDFC. This skill and its scripts
-  say USDFC throughout; if you're reading the underlying tool's source or
-  its own README and see "USDC", that's the upstream project's naming, not
-  a different token. Don't assume it's interchangeable with Circle's USDC —
-  Filecoin isn't among Circle's natively-issued USDC chains as of early
-  2026, which is exactly why this distinction matters.
-- **Every transaction needs two confirmations, always.** First, the
-  command-level confirmation (e.g. `propose-deal-from-manifest` showing the
-  computed deal terms and cost), then a second, lower-level "final
-  confirmation" showing raw transaction parameters (from/to/gas/nonce)
-  right before signing. `propose-filecoin-deal.sh execute` pipes `yes`
-  through both — this is only safe because a human already saw the real
-  cost via `preview` and explicitly agreed before `execute` ran. If you
-  decline the low-level confirmation manually, the tool falls back to
-  simulating the transaction rather than erroring — it does not abort with
-  an exception.
-- **`propose-deal-from-manifest` never returns a deal ID** — only a
-  transaction hash. Since this pipeline always proposes two deals against
-  the identical manifest URL, deal IDs are recovered afterward via
-  `client get-deals proposed`, filtered by matching `manifest_location`,
-  taking the two most recent (highest) IDs. If more than two proposed deals
-  already share that exact manifest URL, `execute` will say so explicitly
-  rather than guessing — check `client get-deals proposed` manually in that
-  case.
-- **`init-accepted-deals` requires sufficient USDFC balance up front** — it
-  throws rather than partially completing if the wallet's balance is short
-  of the calculated deposit. Check `client get-filecoinpay-account` before
-  a large `execute` run, not after it fails partway through.
-- **A deal only leaves `PROPOSED` state when a storage provider explicitly
-  accepts it** — this is an external, asynchronous action outside anyone's
-  control on the client side. `execute`'s polling loop can legitimately run
-  for days; that is expected, not a hang.
-- **A rejected deal is not an error to retry.** `execute` reports a
-  `REJECTED`/`TERMINATED` deal plainly and moves on to complete whichever
-  of the two deals (if any) was accepted. Proposing a replacement for the
-  rejected one is a fresh decision, not an automatic retry.
+Verified against the commit pinned in `propose-filecoin-deal.sh`
+(`TOOLING_REF`) and PoRep Market contracts v2.0.2.
+
+- **Deals are matched, not accepted.** `client propose-deal` sends a request
+  (manifest hash and URL, size, SLA thresholds, max price, token, duration,
+  deal type); the SPRegistry picks an eligible offer on-chain and the deal is
+  created directly in `ACCEPTED`. Among eligible offers it prefers the
+  cheapest (within a 1% band), then the least-loaded provider. There is no
+  `PROPOSED` waiting period and no client-side SP choice; only admins can
+  propose against a specific offer.
+- **Two copies are enforced per organization.** The registry records which
+  organizations already hold a deal for a given client and manifest hash and
+  skips them when matching. That's what makes the second proposal land with
+  a different, independent organization. It is keyed on the manifest
+  *hash*: change the manifest bytes and the registry treats it as a new
+  dataset.
+- **The upstream tool calls the payment token "USDC"** (`USDC_TOKEN`,
+  `USDCToken`, help texts). The configured mainnet address is USDFC. The
+  registry also allows axlUSDC; see [wallet-setup.md](wallet-setup.md).
+- **Price is a per-TiB maximum in decimal tokens.** `--price-per-tib-per-month`
+  is converted by the tooling to smallest units per 32 GiB sector and
+  rejected above 100. The deal is billed at the matched offer's price.
+- **Every transaction needs two confirmations.** First a command-level one
+  (e.g. `propose-deal` showing the computed terms and maximum cost), then a
+  "final confirmation" with raw transaction parameters. `propose-filecoin-deal.sh`
+  pipes `yes` through both — only safe because a human already approved the
+  `quote`. If the final confirmation is declined, the tool falls back to
+  simulating the transaction rather than erroring.
+- **Dry runs still estimate gas.** With `DRY_RUN=true` the transaction is
+  built (which runs gas estimation against the chain, so a `NoOfferMatched`
+  revert shows up) and signed, but not sent. A dry run can only check the
+  *next* proposal: copy 2's match depends on copy 1's organization being
+  reserved first, which is why `quote` also evaluates offers itself.
+- **`propose-deal` prints the new deal ID**; `client get-deals` lists deals
+  without their manifest URL, so `propose-filecoin-deal.sh` matches copies by
+  reading each deal with `client get-deal` (`data.manifest_location`).
+- **`init-deal` deposits money.** Besides the validator and payment rail, it
+  deposits the first month for that deal into FilecoinPay and approves the
+  validator as operator. It checks the wallet balance before sending
+  anything.
+- **`make-allocations` only applies to DataCap deals** (evidence type
+  `VERIF_REG_CLAIMS`, the current mainnet global adapter — see `client
+  info`). Under `SECTOR_PLACEMENT` there are no allocations; the SP proves
+  placement when sealing. Allocations expire about 30 days after they're
+  made.
+- **`deposit-for-deals` is wallet-wide.** Without a deal ID it covers every
+  ready deal of the wallet; with one it still nets against the whole
+  FilecoinPay account balance. `propose-filecoin-deal.sh fund` uses the
+  wallet-wide form so two deals aren't under-funded.
+- **The tooling self-updates** from its tracking branch unless
+  `SKIP_SELF_UPDATE=true`, and with piped "yes" an update exits 0 without
+  running the command. The pinned, detached checkout plus that variable
+  prevents this.
 
 ## Maintainer notes (if modifying either bundled script)
 
@@ -140,7 +159,7 @@ online for that long is safe to bake into an immutable on-chain field.
   yes | python3 -c "print(1)"
   echo "this line never runs"   # true — the script dies at the line above
   ```
-  This bit `preview` mode specifically during testing: it silently stopped
+  This bit the old `preview` mode specifically during testing: it silently stopped
   right after the wallet-check step, printing nothing further and no error,
   for exactly this reason. Fixed everywhere by wrapping `yes` so its own
   exit status always reads as 0 regardless of how it terminates —
@@ -158,7 +177,12 @@ online for that long is safe to bake into an immutable on-chain field.
   bash 3.2 by default, and these scripts are meant to run on whatever bash
   a client already has, not a Homebrew-updated one. An earlier version used
   `local -A` for tracking two deals' states; it was rewritten to use two
-  plain scalar variables instead.
+  plain scalar variables instead. Also under bash 3.2, `"${arr[@]}"` on an
+  empty array fails under `set -u`; use `${arr[@]+"${arr[@]}"}`.
+- **Never close stdin on a tooling command that may prompt.** Read-only
+  calls run with `</dev/null` so a surprise prompt fails instead of hanging,
+  which is why `client validate-manifest` (it asks "Show manifest?") is fed
+  an explicit `no` instead.
 - **Content-Length can go missing on responses proxied through an
   intermediate hop** (this bit an earlier, now-removed tunnel-based
   architecture specifically) — a 1-byte range request and reading
